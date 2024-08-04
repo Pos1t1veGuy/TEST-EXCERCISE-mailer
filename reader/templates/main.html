@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IMAP Configuration</title>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <style>
+        #message-list li {
+            margin-bottom: 1em;
+            padding: 1em;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        .attachments {
+            margin-top: 0.5em;
+        }
+        .attachments a {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <h1>Mail Integration</h1>
+    <form id="mailForm" method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Scan</button>
+    </form>
+    <p id="tip">* Индекс конечного сообщения может быть и отрицательным, в соответствии с синтаксисом Python</p>
+
+    <div id="progress-bar" style="display: none;">
+        <p id="status">Reading messages...</p>
+        <div style="background: #ccc; width: 100%; height: 20px;">
+            <div id="progress" style="background: #4caf50; width: 0; height: 100%;"></div>
+        </div>
+    </div>
+
+    <ul id="message-list"></ul>
+
+    <script>
+        {% if status == 'OK' %}
+            let start_index = 0;
+            let end_index = 0;
+            let current_index = 0;
+            const body_slice = 70;
+
+            function containsHTML(text) {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(text, 'text/html');
+                return Array.from(doc.body.childNodes).some(node => node.nodeType === Node.ELEMENT_NODE);
+            }
+
+            $(document).ready(function() {
+                const socket = new WebSocket('ws://' + window.location.host + '/ws/mail-server/');
+
+                socket.onopen = function(event) {
+                    console.log('WebSocket connection opened');
+
+                    socket.send(JSON.stringify({
+                        type: 'imap-form',
+                        email: '{{ form.email.value|escapejs }}',
+                        password: '{{ form.password.value|escapejs }}',
+                        server: '{{ form.server.value|escapejs }}',
+                        port: '{{ form.port.value|escapejs }}',
+                        mailbox: '{{ form.mailbox.value|escapejs }}',
+                        range: '{{ form.range.value|escapejs }}'
+                    }));
+                    $('#mailForm').hide();
+                    $('#tip').hide();
+                    $('#progress-bar').show();
+                    $('#status').text('Reading messages...');
+                    $('#status').show();
+                };
+
+                socket.onmessage = function(event) {
+                    const data = JSON.parse(event.data);
+                    switch (data.type) {
+                        case 'scanning_start':
+                            start_index = data.from;
+                            end_index = data.to;
+                            break;
+                        case 'scan-progress':
+                            current_index++;
+                            $('#progress').css('width', `${ (current_index / (end_index - start_index) * 100).toFixed(1) }%`);
+                            if (data.message) {
+                                let attachmentsHtml = '';
+
+                                if ($('#status').text() !== 'Fetching messages...') {
+                                    $('#status').text('Fetching messages...');
+                                }
+
+                                if (data.message.attachments && data.message.attachments.length > 0) {
+                                    attachmentsHtml = '<div class="attachments"><strong>Attachments:</strong>';
+                                    data.message.attachments.forEach(attachment => {
+                                        attachmentsHtml += `<a href="${attachment.url}" download="${attachment.name}">${attachment.name}</a>`;
+                                    });
+                                    attachmentsHtml += '</div>';
+                                }
+
+                                li = `<li>
+                                    <strong>ID:</strong> ${data.message.id}<br>
+                                    <strong>From:</strong> ${data.message.From}<br>
+                                    <strong>Subject:</strong> ${data.message.subject}<br>
+                                    <strong>Date Sent:</strong> ${data.message.date_sent}<br>
+                                    <strong>Date Received:</strong> ${data.message.date_received}`;
+
+                                if (data.message.body && data.message.body != 'None') {
+                                    if (containsHTML(data.message.body)) {
+                                        li += '<br><strong>HtmlBody inside</strong>';
+                                    } else if (data.message.body.length >= body_slice) {
+                                        li += `<br><strong>Body:</strong> ${data.message.body.slice(0, body_slice-3) + '...'}`;
+                                    } else if (data.message.body.length > 0) {
+                                        li += `<br><strong>Body:</strong> ${data.message.body}`;
+                                    }
+                                }
+                                if (data.message.attachments) {
+                                    li += `<br>${attachmentsHtml}`;
+                                }
+
+                                $('#message-list').append(li + '</li>');
+                            }
+                            if (current_index >= (end_index - start_index)) {
+                                $('#progress-bar').hide();
+                                $('#mailForm').show();
+                                $('#tip').show();
+                                $('#status').text('Reading messages...');
+                                $('#status').hide();
+                            }
+                            break;
+                        case 'ERROR':
+                            $('#progress-bar').hide();
+                            $('#mailForm').show();
+                            $('#tip').show();
+                            $('#status').text('Reading messages...');
+                            $('#status').hide();
+                            alert('Error: ' + data.message);
+                            break;
+                    }
+                };
+
+                socket.onclose = function(event) {
+                    console.log('WebSocket connection closed');
+                };
+            });
+        {% endif %}
+    </script>
+</body>
+</html>
